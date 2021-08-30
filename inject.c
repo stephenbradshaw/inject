@@ -4,6 +4,10 @@
 // have been loaded into its address space, and their respective DllMain
 // functions have finished executing.
 //
+// Compile using mingw:
+//	$ x86_64-w64-mingw32-gcc inject.c -o inject.exe
+//
+//
 // Usage
 //
 //    $ inject EXE [DLL...]
@@ -50,6 +54,10 @@ int main(int argc, char **argv) {
 	page = VirtualAllocEx(pi.hProcess, NULL, MAX_PATH, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 	if (page == NULL) {
 		fprintf(stderr, "VirtualAllocEx failed; error code = 0x%08X\n", GetLastError());
+
+		//cleanup 
+		ResumeThread(pi.hThread);
+		CloseHandle(pi.hProcess);
 		return 1;
 	}
 
@@ -61,16 +69,31 @@ int main(int argc, char **argv) {
 		len = strlen(lib_path) + 1;
 		if (len > MAX_PATH) {
 			fprintf(stderr, "path length (%d) exceeds MAX_PATH (%d).\n", len, MAX_PATH);
+
+			//cleanup 
+			ResumeThread(pi.hThread);
+			VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
+			CloseHandle(pi.hProcess);
 			return 1;
 		}
 		if (GetFileAttributes(lib_path) == INVALID_FILE_ATTRIBUTES) {
 			fprintf(stderr, "unable to locate library (%s).\n", lib_path);
+
+			//cleanup 
+			ResumeThread(pi.hThread);
+			VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
+			CloseHandle(pi.hProcess);
 			return 1;
 		}
 
 		// Write library path to the page used for LoadLibrary arguments.
 		if (WriteProcessMemory(pi.hProcess, page, lib_path, len, NULL) == 0) {
 			fprintf(stderr, "WriteProcessMemory failed; error code = 0x%08X\n", GetLastError());
+
+			// cleanup
+			ResumeThread(pi.hThread);
+			CloseHandle(pi.hProcess);
+			VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
 			return 1;
 		}
 
@@ -79,12 +102,25 @@ int main(int argc, char **argv) {
 		hThread = CreateRemoteThread(pi.hProcess, NULL, 0, (LPTHREAD_START_ROUTINE) LoadLibraryA, page, 0, NULL);
 		if (hThread == NULL) {
 			fprintf(stderr, "CreateRemoteThread failed; error code = 0x%08X\n", GetLastError());
+			
+			// cleanup
+			CloseHandle(hThread);
+			ResumeThread(pi.hThread);
+			CloseHandle(pi.hProcess);
+			VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
+			
 			return 1;
 		}
 
 		// Wait for DllMain to return.
 		if (WaitForSingleObject(hThread, INFINITE) == WAIT_FAILED) {
 			fprintf(stderr, "WaitForSingleObject failed; error code = 0x%08X\n", GetLastError());
+
+			// cleanup
+			CloseHandle(hThread);
+			ResumeThread(pi.hThread);
+			CloseHandle(pi.hProcess);
+			VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
 			return 1;
 		}
 
@@ -96,6 +132,10 @@ int main(int argc, char **argv) {
 	// into its address space.
 	if (ResumeThread(pi.hThread) == -1) {
 		fprintf(stderr, "ResumeThread failed; error code = 0x%08X\n", GetLastError());
+
+		// cleanup
+		CloseHandle(pi.hProcess);
+		VirtualFreeEx(pi.hProcess, page, MAX_PATH, MEM_RELEASE);
 		return 1;
 	}
 
